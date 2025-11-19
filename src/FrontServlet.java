@@ -114,8 +114,21 @@ public class FrontServlet extends HttpServlet {
 
                     // 🔹 5. Si la méthode renvoie quelque chose, l’afficher dans la réponse
                     if (result != null) {
+
+                        // Si la méthode retourne ModelView → FORWARD vers JSP
+                        if (result instanceof ModelView) {
+                            ModelView mv = (ModelView) result;
+
+                            // Forward vers la vue
+                            RequestDispatcher dispatcher = req.getRequestDispatcher(mv.getView());
+                            dispatcher.forward(req, resp);
+                            return;
+                        }
+
+                        // Sinon → affichage normal (String, int, etc.)
                         resp.getWriter().println(result.toString());
-                    }
+                }
+
 
                 } catch (Exception e) {
                     // 🔹 6. Gestion des erreurs
