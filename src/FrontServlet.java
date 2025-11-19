@@ -116,14 +116,20 @@ public class FrontServlet extends HttpServlet {
                     if (result != null) {
 
                         // Si la méthode retourne ModelView → FORWARD vers JSP
-                        if (result instanceof ModelView) {
-                            ModelView mv = (ModelView) result;
+                    if (result instanceof ModelView) {
+                        ModelView mv = (ModelView) result;
 
-                            // Forward vers la vue
-                            RequestDispatcher dispatcher = req.getRequestDispatcher(mv.getView());
-                            dispatcher.forward(req, resp);
-                            return;
+                        // 🔹 transmettre les données à la JSP
+                        for (Map.Entry<String, Object> entry : mv.getData().entrySet()) {
+                            req.setAttribute(entry.getKey(), entry.getValue());
                         }
+
+                        // Forward vers la vue
+                        RequestDispatcher dispatcher = req.getRequestDispatcher(mv.getView());
+                        dispatcher.forward(req, resp);
+                        return;
+                    }
+
 
                         // Sinon → affichage normal (String, int, etc.)
                         resp.getWriter().println(result.toString());
