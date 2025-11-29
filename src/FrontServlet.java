@@ -111,7 +111,7 @@ public class FrontServlet extends HttpServlet {
             return;
         }
 
-        // ===== 3. URL AVEC PARAMÈTRE /tiko/{valeur} =====
+        // ===== 3. URL AVEC PARAMÈTREE /tiko/{valeur} =====
         for (String mappedUrl : methodMap.keySet()) {
 
             if (mappedUrl.contains("{") && mappedUrl.contains("}")) {
