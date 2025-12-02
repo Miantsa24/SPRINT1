@@ -42,7 +42,6 @@ public class FrontServlet extends HttpServlet {
                 try {
                     String prefix = "/WEB-INF/classes/";
                     if (!p.startsWith(prefix)) continue;
-
                     String classPath = p.substring(prefix.length(), p.length() - 6);
                     String className = classPath.replace('/', '.');
 
@@ -70,12 +69,13 @@ public class FrontServlet extends HttpServlet {
     protected void service(HttpServletRequest req, HttpServletResponse resp)
             throws ServletException, IOException {
 
+        req.setCharacterEncoding("UTF-8");
         resp.setContentType("text/html;charset=UTF-8");
 
         String uri = req.getRequestURI();
         String path = uri.replaceFirst(req.getContextPath(), "");
 
-        // ===== 1. Ressource statique =====
+        // 1. Ressources statiques
         InputStream res = getServletContext().getResourceAsStream(path);
         if (res != null) {
             OutputStream out = resp.getOutputStream();
@@ -84,34 +84,84 @@ public class FrontServlet extends HttpServlet {
             return;
         }
 
-        // ===== 2. URL EXACTE =====
+        // 2. URL exact sans paramètre
         if (methodMap.containsKey(path)) {
+
             Class<?> controllerClass = controllerMap.get(path);
             Method method = methodMap.get(path);
 
             try {
                 Object controllerInstance = controllerClass.getDeclaredConstructor().newInstance();
+
+                // ==== Binding automatique (Déjà présent) ====
+                Class<?>[] paramTypes = method.getParameterTypes();
+                Object[] args = new Object[paramTypes.length];
+
+                System.out.println("=== DEBUG Sprint 6 ===");
+                System.out.println("Paramètres HTTP reçus : " + req.getParameterMap().keySet());
+
+                for (int i = 0; i < paramTypes.length; i++) {
+                    String paramName = method.getParameters()[i].getName();
+                    String value = req.getParameter(paramName);
+
+                    System.out.println("Param[" + i + "] = " + paramName + " -> " + value);
+
+                    if (value == null) {
+                        args[i] = null;
+                        continue;
+                    }
+
+                    if (paramTypes[i] == String.class) {
+                        args[i] = value;
+                    } else if (paramTypes[i] == int.class || paramTypes[i] == Integer.class) {
+                        args[i] = Integer.parseInt(value);
+                    } else if (paramTypes[i] == double.class || paramTypes[i] == Double.class) {
+                        args[i] = Double.parseDouble(value);
+                    } else {
+                        args[i] = value;
+                    }
+                }
+
                 Object result;
 
                 if (method.getParameterCount() == 2 &&
-                    method.getParameterTypes()[0] == HttpServletRequest.class &&
-                    method.getParameterTypes()[1] == HttpServletResponse.class) {
+                        method.getParameterTypes()[0] == HttpServletRequest.class &&
+                        method.getParameterTypes()[1] == HttpServletResponse.class) {
+
                     result = method.invoke(controllerInstance, req, resp);
+
                 } else {
-                    result = method.invoke(controllerInstance);
+                    result = method.invoke(controllerInstance, args);
                 }
 
                 if (result != null) {
+
+                    if (result instanceof ModelView mv) {
+                        for (Map.Entry<String, Object> entry : mv.getData().entrySet()) {
+                            req.setAttribute(entry.getKey(), entry.getValue());
+                        }
+                        RequestDispatcher dispatcher = req.getRequestDispatcher(mv.getView());
+                        dispatcher.forward(req, resp);
+                        return;
+                    }
+
                     resp.getWriter().println(result.toString());
                 }
 
             } catch (Exception e) {
+                resp.getWriter().println("<html><body>");
+                resp.getWriter().println("<h3>Erreur lors de l'exécution du contrôleur</h3>");
                 resp.getWriter().println("<pre>" + e.getMessage() + "</pre>");
+                resp.getWriter().println("</body></html>");
+                e.printStackTrace();
             }
             return;
         }
 
-        // ===== 3. URL AVEC PARAMÈTREE /tiko/{valeur} =====
+        // >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
+        // >>> AJOUT : GESTION URL AVEC PARAMÈTRE /route/{id}
+        // >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
+
         for (String mappedUrl : methodMap.keySet()) {
 
             if (mappedUrl.contains("{") && mappedUrl.contains("}")) {
@@ -120,7 +170,7 @@ public class FrontServlet extends HttpServlet {
 
                 if (path.startsWith(base + "/")) {
 
-                    String valeur = path.substring(base.length() + 1);
+                    String paramValue = path.substring(base.length() + 1);
 
                     Class<?> controllerClass = controllerMap.get(mappedUrl);
                     Method method = methodMap.get(mappedUrl);
@@ -128,13 +178,14 @@ public class FrontServlet extends HttpServlet {
                     try {
                         Object controllerInstance = controllerClass.getDeclaredConstructor().newInstance();
 
-                        req.setAttribute("param", valeur);
+                        req.setAttribute("param", paramValue);
 
                         Object result;
 
                         if (method.getParameterCount() == 2 &&
-                            method.getParameterTypes()[0] == HttpServletRequest.class &&
-                            method.getParameterTypes()[1] == HttpServletResponse.class) {
+                                method.getParameterTypes()[0] == HttpServletRequest.class &&
+                                method.getParameterTypes()[1] == HttpServletResponse.class) {
+
                             result = method.invoke(controllerInstance, req, resp);
                         } else {
                             result = method.invoke(controllerInstance);
@@ -152,7 +203,11 @@ public class FrontServlet extends HttpServlet {
             }
         }
 
-        // ===== 4. 404 =====
+        // <<< AJOUT
+        // <<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<
+
+
+        // 7. 404
         resp.getWriter().println("<html><body>");
         resp.getWriter().println("<p>404 - Route non trouvée</p>");
         resp.getWriter().println("<p>URL demandée : " + path + "</p>");
