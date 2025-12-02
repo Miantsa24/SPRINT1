@@ -93,34 +93,41 @@ public class FrontServlet extends HttpServlet {
             try {
                 Object controllerInstance = controllerClass.getDeclaredConstructor().newInstance();
 
-                // ==== Binding automatique (Déjà présent) ====
-                Class<?>[] paramTypes = method.getParameterTypes();
-                Object[] args = new Object[paramTypes.length];
+                // ==== Binding automatique (Sprint 6 + Sprint 6-bis) ====
+            Class<?>[] paramTypes = method.getParameterTypes();
+            java.lang.reflect.Parameter[] parameters = method.getParameters();
+            Object[] args = new Object[paramTypes.length];
 
-                System.out.println("=== DEBUG Sprint 6 ===");
-                System.out.println("Paramètres HTTP reçus : " + req.getParameterMap().keySet());
-
-                for (int i = 0; i < paramTypes.length; i++) {
-                    String paramName = method.getParameters()[i].getName();
-                    String value = req.getParameter(paramName);
-
-                    System.out.println("Param[" + i + "] = " + paramName + " -> " + value);
-
-                    if (value == null) {
-                        args[i] = null;
-                        continue;
-                    }
-
-                    if (paramTypes[i] == String.class) {
-                        args[i] = value;
-                    } else if (paramTypes[i] == int.class || paramTypes[i] == Integer.class) {
-                        args[i] = Integer.parseInt(value);
-                    } else if (paramTypes[i] == double.class || paramTypes[i] == Double.class) {
-                        args[i] = Double.parseDouble(value);
-                    } else {
-                        args[i] = value;
-                    }
+            for (int i = 0; i < paramTypes.length; i++) {
+                String paramKey; // La clé pour chercher dans la requête
+                
+                // SPRINT 6-BIS : Vérifier si le paramètre a l'annotation @RequestParam
+                if (parameters[i].isAnnotationPresent(RequestParam.class)) {
+                    RequestParam annotation = parameters[i].getAnnotation(RequestParam.class);
+                    paramKey = annotation.value(); // Utiliser la valeur de l'annotation
+                } else {
+                    // SPRINT 6 : Utiliser le nom du paramètre Java directement
+                    paramKey = parameters[i].getName();
                 }
+                
+                String value = req.getParameter(paramKey);
+                
+                if (value == null) {
+                    args[i] = null;
+                    continue;
+                }
+                
+                // Conversion selon le type
+                if (paramTypes[i] == String.class) {
+                    args[i] = value;
+                } else if (paramTypes[i] == int.class || paramTypes[i] == Integer.class) {
+                    args[i] = Integer.parseInt(value);
+                } else if (paramTypes[i] == double.class || paramTypes[i] == Double.class) {
+                    args[i] = Double.parseDouble(value);
+                } else {
+                    args[i] = value;
+                }
+            }
 
                 Object result;
 
