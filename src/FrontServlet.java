@@ -37,7 +37,8 @@ public class FrontServlet extends HttpServlet {
         for (String p : children) {
             if (p.endsWith("/")) {
                 scanResources(p, ctx);
-            } else if (p.endsWith(".class")) {
+            } 
+            else if (p.endsWith(".class")) {
                 try {
                     String prefix = "/WEB-INF/classes/";
                     if (!p.startsWith(prefix)) continue;
@@ -57,10 +58,8 @@ public class FrontServlet extends HttpServlet {
                             }
                         }
                     }
-                } catch (ClassNotFoundException e) {
-                    log("Class not found while scanning: " + e.getMessage());
                 } catch (Throwable t) {
-                    log("Error scanning class " + p + " : " + t);
+                    log("Erreur lors du scan : " + t.getMessage());
                 }
             }
         }
