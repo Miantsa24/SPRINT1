@@ -10,7 +10,7 @@ REM Dossiers
 set SRC_DIR=src
 set BUILD_DIR=classes
 set LIB_DIR=lib
-set DEST_DIR=C:\Program Files\Apache Software Foundation\Tomcat 10.0\webapps\url_test\WEB-INF\lib
+set DEST_DIR=C:\Program Files\Apache Software Foundation\apache-tomcat-10.1.49\webapps\url_test\WEB-INF\lib
 
 echo === Compilation du projet et création de %JAR_NAME% ===
 
@@ -33,7 +33,7 @@ setlocal enabledelayedexpansion
 
 echo Compilation des fichiers Java...
 dir /s /b "%SRC_DIR%\*.java" > sources.txt
-javac -cp "!CP!" -d "%BUILD_DIR%" @sources.txt
+javac -parameters -cp "!CP!" -d "%BUILD_DIR%" @sources.txt
 del sources.txt
 
 if %ERRORLEVEL% NEQ 0 (
