@@ -10,9 +10,17 @@ import java.util.HashMap;
 import java.util.Map;
 import java.util.Set;
 
+
+
 public class FrontServlet extends HttpServlet {
     private final Map<String, Class<?>> controllerMap = new HashMap<>();
     private final Map<String, Method> methodMap = new HashMap<>();
+    private final Map<String, Method> getMap = new HashMap<>();
+    private final Map<String, Method> postMap = new HashMap<>();
+    private final Map<String, Method> dynamicGetMap = new HashMap<>();
+    private final Map<String, Method> dynamicPostMap = new HashMap<>();
+
+
 
     @Override
     public void init() throws ServletException {
@@ -55,15 +63,101 @@ public class FrontServlet extends HttpServlet {
                                 if (!url.startsWith("/")) url = "/" + url;
                                 controllerMap.put(url, cls);
                                 methodMap.put(url, m);
+
+                                // Sprint 6-ter : si URL dynamique
+                                if (url.contains("{")) {
+                                    dynamicGetMap.put(url, m);
+                                    dynamicPostMap.put(url, m);
+                                }
                             }
+
+                            if (m.isAnnotationPresent(GetMapping.class)) {
+                                GetMapping g = m.getAnnotation(GetMapping.class);
+                                String url = g.value();
+                                if (!url.startsWith("/")) url = "/" + url;
+                                getMap.put(url, m);
+                                controllerMap.put(url + "_GET", cls);
+
+                                // Sprint 6-ter : si URL dynamique
+                                if (url.contains("{")) {
+                                    dynamicGetMap.put(url, m);
+                                }
+                            }
+
+                            if (m.isAnnotationPresent(PostMapping.class)) {
+                                PostMapping pm = m.getAnnotation(PostMapping.class);
+                                String url = pm.value();
+                                if (!url.startsWith("/")) url = "/" + url;
+                                postMap.put(url, m);
+                                controllerMap.put(url + "_POST", cls);
+
+                                // Sprint 6-ter : si URL dynamique
+                                if (url.contains("{")) {
+                                    dynamicPostMap.put(url, m);
+                                }
+                            }
+
+
                         }
                     }
+                    
                 } catch (Throwable t) {
                     log("Erreur lors du scan : " + t.getMessage());
                 }
             }
         }
     }
+
+    private void invokeMethod(Class<?> controllerClass, Method method,
+                          HttpServletRequest req, HttpServletResponse resp)
+        throws ServletException, IOException {
+
+    try {
+        Object controller = controllerClass.getDeclaredConstructor().newInstance();
+
+        // binding Sprint 6 + 6bis
+        Class<?>[] paramTypes = method.getParameterTypes();
+        java.lang.reflect.Parameter[] params = method.getParameters();
+        Object[] args = new Object[paramTypes.length];
+
+        for (int i = 0; i < params.length; i++) {
+            String key;
+            if (params[i].isAnnotationPresent(RequestParam.class)) {
+                key = params[i].getAnnotation(RequestParam.class).value();
+            } else {
+                key = params[i].getName();
+            }
+
+            String value = req.getParameter(key);
+
+            if (value == null) { args[i] = null; continue; }
+
+            if (paramTypes[i] == String.class) args[i] = value;
+            else if (paramTypes[i] == int.class || paramTypes[i] == Integer.class) args[i] = Integer.parseInt(value);
+            else if (paramTypes[i] == double.class || paramTypes[i] == Double.class) args[i] = Double.parseDouble(value);
+            else args[i] = value;
+        }
+
+        Object result = method.invoke(controller, args);
+
+        if (result instanceof ModelView mv) {
+            for (var e : mv.getData().entrySet()) {
+                req.setAttribute(e.getKey(), e.getValue());
+            }
+            RequestDispatcher dispatcher = req.getRequestDispatcher(mv.getView());
+            dispatcher.forward(req, resp);
+            return;
+        }
+
+        if (result != null) {
+            resp.getWriter().println(result.toString());
+        }
+
+    } catch (Exception e) {
+        resp.getWriter().println("<pre>" + e + "</pre>");
+    }
+}
+
 
 // … (tout le haut du fichier reste IDENTIQUE)
 @Override
@@ -86,6 +180,32 @@ protected void service(HttpServletRequest req, HttpServletResponse resp)
         res.close();
         return;
     }
+
+    String httpMethod = req.getMethod(); // GET ou POST
+
+// ==================================================================================
+// 🟦 SPRING 7 — PRIORITÉ 1 : GET / POST spécifiques
+// ==================================================================================
+if (httpMethod.equals("GET") && getMap.containsKey(path)) {
+
+    Class<?> controllerClass = controllerMap.get(path + "_GET");
+    Method method = getMap.get(path);
+
+    invokeMethod(controllerClass, method, req, resp);
+    return;
+}
+
+
+if (httpMethod.equals("POST") && postMap.containsKey(path)) {
+
+    Class<?> controllerClass = controllerMap.get(path + "_POST");
+    Method method = postMap.get(path);
+
+    invokeMethod(controllerClass, method, req, resp);
+    return;
+}
+
+
 
     // =====================================================
     // SPRINT 2 → URL EXACTE SANS PARAM
@@ -183,103 +303,88 @@ protected void service(HttpServletRequest req, HttpServletResponse resp)
     //
     //   URL : /user/12/30  → injection automatique dans la méthode
     // ====================================================================================
+// Choisir la map dynamique selon la méthode HTTP
+Map<String, Method> dynamicMap = null;
+if (httpMethod.equals("GET")) dynamicMap = dynamicGetMap;
+else if (httpMethod.equals("POST")) dynamicMap = dynamicPostMap;
 
-for (String mappedUrl : methodMap.keySet()) {
+if (dynamicMap != null) {
+    for (String mappedUrl : dynamicMap.keySet()) {
 
-    if (!mappedUrl.contains("{")) continue;
+        Map<String, String> extracted = matchPathAndExtractParams(mappedUrl, path);
+        if (extracted == null) continue;
 
-    Map<String, String> extracted = matchPathAndExtractParams(mappedUrl, path);
-    if (extracted == null) continue; // pas correspondance
+        Method method = dynamicMap.get(mappedUrl);
 
-    Class<?> controllerClass = controllerMap.get(mappedUrl);
-    Method method = methodMap.get(mappedUrl);
+        // Obtenir le controller correspondant
+       // Obtenir le controller correspondant
+// Obtenir le controller correspondant pour dynamic URL
+Class<?> controllerClass = null;
 
-    try {
-        Object controllerInstance = controllerClass.getDeclaredConstructor().newInstance();
+// Vérifier GetMapping / PostMapping spécifique
+if (httpMethod.equals("GET") && controllerMap.containsKey(mappedUrl + "_GET"))
+    controllerClass = controllerMap.get(mappedUrl + "_GET");
+else if (httpMethod.equals("POST") && controllerMap.containsKey(mappedUrl + "_POST"))
+    controllerClass = controllerMap.get(mappedUrl + "_POST");
 
+// Sinon fallback sur UrlAnnotation
+if (controllerClass == null)
+    controllerClass = controllerMap.get(mappedUrl);
 
-        // ================================================================
-        // 🔥🔥🔥 INSERTION DU NOUVEAU CODE Sprint 6-ter ICI 🔥🔥🔥
-        // → Vérifier si la méthode accepte bien toutes les variables dynamiques
-        // → Sinon passer au Sprint 3-bis (request parameters)
-        // ================================================================
-
-        boolean allDynamicParamsFound = true;
-
-        for (java.lang.reflect.Parameter p : method.getParameters()) {
-
-            // priorité 1 : paramètre dans URL {id}
-            if (extracted.containsKey(p.getName())) continue;
-
-            // priorité 2 : paramètre dans la request ?id=12
-            if (req.getParameter(p.getName()) != null) continue;
-
-            // ni dans URL, ni dans request → pas possible → ignorer cette méthode
-            allDynamicParamsFound = false;
-            break;
-        }
-
-        if (!allDynamicParamsFound) continue;
-
-        // ================================================================
-        // 🔥🔥🔥 FIN DU NOUVEAU CODE
-        // ================================================================
+// Si toujours null, passer au suivant (évite NullPointer)
+if (controllerClass == null) continue;
 
 
-        // === Préparer les arguments automatiques ===
-        Class<?>[] paramTypes = method.getParameterTypes();
-        java.lang.reflect.Parameter[] parameters = method.getParameters();
-        Object[] args = new Object[paramTypes.length];
 
-        for (int i = 0; i < parameters.length; i++) {
-            String paramName = parameters[i].getName();
+        try {
+            Object controllerInstance = controllerClass.getDeclaredConstructor().newInstance();
 
-            String rawValue = null;
+            // Préparer les arguments automatiques (Sprint 6-ter)
+            Class<?>[] paramTypes = method.getParameterTypes();
+            java.lang.reflect.Parameter[] parameters = method.getParameters();
+            Object[] args = new Object[paramTypes.length];
 
-            // ----- PRIORITÉ 1 : URL dynamique -----
-            if (extracted.containsKey(paramName)) {
-                rawValue = extracted.get(paramName);
-            }
-            // ----- PRIORITÉ 2 : Request param -----
-            else if (req.getParameter(paramName) != null) {
-                rawValue = req.getParameter(paramName);
-            }
-            // ----- PRIORITÉ 3 : null -----
-            else {
-                args[i] = null;
-                continue;
+            boolean allDynamicParamsFound = true;
+            for (int i = 0; i < parameters.length; i++) {
+                String paramName = parameters[i].getName();
+                String rawValue = null;
+
+                if (extracted.containsKey(paramName)) rawValue = extracted.get(paramName);
+                else if (req.getParameter(paramName) != null) rawValue = req.getParameter(paramName);
+                else {
+                    allDynamicParamsFound = false;
+                    break;
+                }
+
+                if (paramTypes[i] == String.class) args[i] = rawValue;
+                else if (paramTypes[i] == int.class || paramTypes[i] == Integer.class) args[i] = Integer.parseInt(rawValue);
+                else if (paramTypes[i] == double.class || paramTypes[i] == Double.class) args[i] = Double.parseDouble(rawValue);
+                else args[i] = rawValue;
             }
 
-            // Conversion
-            if (paramTypes[i] == String.class) args[i] = rawValue;
-            else if (paramTypes[i] == int.class || paramTypes[i] == Integer.class)
-                args[i] = Integer.parseInt(rawValue);
-            else if (paramTypes[i] == double.class || paramTypes[i] == Double.class)
-                args[i] = Double.parseDouble(rawValue);
-            else
-                args[i] = rawValue;
-        }
+            if (!allDynamicParamsFound) continue;
 
-        Object result = method.invoke(controllerInstance, args);
+            // Appeler la méthode
+            Object result = method.invoke(controllerInstance, args);
 
-        if (result instanceof ModelView mv) {
-            for (Map.Entry<String, Object> entry : mv.getData().entrySet()) {
-                req.setAttribute(entry.getKey(), entry.getValue());
+            if (result instanceof ModelView mv) {
+                for (Map.Entry<String, Object> entry : mv.getData().entrySet()) {
+                    req.setAttribute(entry.getKey(), entry.getValue());
+                }
+                RequestDispatcher dispatcher = req.getRequestDispatcher(mv.getView());
+                dispatcher.forward(req, resp);
+                return;
             }
-            RequestDispatcher dispatcher = req.getRequestDispatcher(mv.getView());
-            dispatcher.forward(req, resp);
-            return;
-        }
 
-        if (result != null) {
-            resp.getWriter().println(result.toString());
-        }
+            if (result != null) resp.getWriter().println(result.toString());
 
-    } catch (Exception e) {
-        resp.getWriter().println("<pre>" + e.getMessage() + "</pre>");
+        } catch (Exception e) {
+            resp.getWriter().println("<pre>" + e.getMessage() + "</pre>");
+        }
+        return;
     }
-    return;
 }
+
 
     // ====================================================================================
 
