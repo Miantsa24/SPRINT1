@@ -120,23 +120,54 @@ public class FrontServlet extends HttpServlet {
         java.lang.reflect.Parameter[] params = method.getParameters();
         Object[] args = new Object[paramTypes.length];
 
-        for (int i = 0; i < params.length; i++) {
-            String key;
-            if (params[i].isAnnotationPresent(RequestParam.class)) {
-                key = params[i].getAnnotation(RequestParam.class).value();
-            } else {
-                key = params[i].getName();
+    for (int i = 0; i < params.length; i++) {
+
+        // === SPRINT 8 : injection automatique Map<String,Object> ===
+        if (paramTypes[i] == Map.class) {
+            Map<String, Object> allParams = new HashMap<>();
+
+            Map<String, String[]> raw = req.getParameterMap();
+
+            for (String key : raw.keySet()) {
+                String[] values = raw.get(key);
+
+                if (values == null) {
+                    allParams.put(key, null);
+                }
+                else if (values.length == 1) {
+                    allParams.put(key, values[0]);   // Une seule valeur -> String
+                }
+                else {
+                    allParams.put(key, values);      // Plusieurs valeurs -> String[]
+                }
             }
 
-            String value = req.getParameter(key);
-
-            if (value == null) { args[i] = null; continue; }
-
-            if (paramTypes[i] == String.class) args[i] = value;
-            else if (paramTypes[i] == int.class || paramTypes[i] == Integer.class) args[i] = Integer.parseInt(value);
-            else if (paramTypes[i] == double.class || paramTypes[i] == Double.class) args[i] = Double.parseDouble(value);
-            else args[i] = value;
+            args[i] = allParams;
+            continue;
         }
+
+
+        String key;
+
+        if (params[i].isAnnotationPresent(RequestParam.class)) {
+            key = params[i].getAnnotation(RequestParam.class).value();
+        } else {
+            key = params[i].getName();
+        }
+
+        String value = req.getParameter(key);
+
+        if (value == null) {
+            args[i] = null;
+            continue;
+        }
+
+        if (paramTypes[i] == String.class) args[i] = value;
+        else if (paramTypes[i] == int.class || paramTypes[i] == Integer.class) args[i] = Integer.parseInt(value);
+        else if (paramTypes[i] == double.class || paramTypes[i] == Double.class) args[i] = Double.parseDouble(value);
+        else args[i] = value;
+    }
+
 
         Object result = method.invoke(controller, args);
 
