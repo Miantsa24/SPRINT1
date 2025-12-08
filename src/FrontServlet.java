@@ -122,6 +122,21 @@ public class FrontServlet extends HttpServlet {
 
     for (int i = 0; i < params.length; i++) {
 
+        // === Sprint 8 bis : objets complexes ===
+        if (!paramTypes[i].isPrimitive()
+            && paramTypes[i] != String.class
+            && paramTypes[i] != Map.class
+            && !paramTypes[i].isArray()
+            && !paramTypes[i].getName().startsWith("java.")) {
+
+            // nom du paramètre = préfixe utilisé dans le formulaire
+            String prefix = params[i].getName();
+
+            args[i] = bindObject(paramTypes[i], prefix, req);
+            continue;
+        }
+
+
         // === SPRINT 8 : injection automatique Map<String,Object> ===
         if (paramTypes[i] == Map.class) {
             Map<String, Object> allParams = new HashMap<>();
@@ -189,8 +204,105 @@ public class FrontServlet extends HttpServlet {
     }
 }
 
+private Object convertValue(Class<?> type, String raw) {
+    if (raw == null) return null;
 
-// … (tout le haut du fichier reste IDENTIQUE)
+    try {
+        if (type == String.class) return raw;
+
+        if (type == int.class || type == Integer.class) return Integer.parseInt(raw);
+
+        if (type == double.class || type == Double.class) return Double.parseDouble(raw);
+
+        if (type == long.class || type == Long.class) return Long.parseLong(raw);
+
+        if (type == float.class || type == Float.class) return Float.parseFloat(raw);
+
+        if (type == boolean.class || type == Boolean.class)
+            return Boolean.parseBoolean(raw);
+
+        // ======== JAVA TIME API ========
+        if (type == java.time.LocalDate.class)
+            return java.time.LocalDate.parse(raw);
+
+        if (type == java.time.LocalDateTime.class)
+            return java.time.LocalDateTime.parse(raw);
+
+        if (type == java.time.LocalTime.class)
+            return java.time.LocalTime.parse(raw);
+
+        // ======== LEGACY DATE ========
+        if (type == java.util.Date.class)
+            return java.sql.Date.valueOf(raw);
+
+        if (type == java.sql.Date.class)
+            return java.sql.Date.valueOf(raw);
+
+        if (type == java.sql.Timestamp.class)
+            return java.sql.Timestamp.valueOf(raw);
+
+        // ======== BigDecimal ========
+        if (type == java.math.BigDecimal.class)
+            return new java.math.BigDecimal(raw);
+
+    } catch (Exception e) {
+        // tu peux log l'erreur
+        return null;
+    }
+
+    // fallback
+    return raw;
+}
+
+
+
+private void setFieldValue(Object target, String path, String value)
+        throws Exception {
+
+    String[] parts = path.split("\\.", 2); // split only first dot
+    String fieldName = parts[0];
+
+    java.lang.reflect.Field field = target.getClass().getDeclaredField(fieldName);
+    field.setAccessible(true);
+
+    // cas 1 → champ simple (nom, age,…)
+    if (parts.length == 1) {
+        field.set(target, convertValue(field.getType(), value));
+        return;
+    }
+
+    // cas 2 → champ imbriqué (adresse.rue)
+    Object child = field.get(target);
+
+    if (child == null) {
+        child = field.getType().getDeclaredConstructor().newInstance();
+        field.set(target, child);
+    }
+
+    setFieldValue(child, parts[1], value);
+}
+
+
+private Object bindObject(Class<?> type, String prefix, HttpServletRequest req)
+        throws Exception {
+
+    Object instance = type.getDeclaredConstructor().newInstance();
+
+    Map<String, String[]> params = req.getParameterMap();
+
+    for (String fullKey : params.keySet()) {
+
+        if (!fullKey.startsWith(prefix + ".")) continue;
+
+        String fieldPath = fullKey.substring((prefix + ".").length());
+        setFieldValue(instance, fieldPath, params.get(fullKey)[0]);
+    }
+
+    return instance;
+}
+
+
+
 @Override
 protected void service(HttpServletRequest req, HttpServletResponse resp)
         throws ServletException, IOException {
@@ -244,76 +356,12 @@ if (httpMethod.equals("POST") && postMap.containsKey(path)) {
     // =====================================================
     if (methodMap.containsKey(path)) {
 
-        Class<?> controllerClass = controllerMap.get(path);
-        Method method = methodMap.get(path);
+    Class<?> controllerClass = controllerMap.get(path);
+    Method method = methodMap.get(path);
 
-        try {
-            Object controllerInstance = controllerClass.getDeclaredConstructor().newInstance();
-
-            // ===== Sprint 6 + 6-bis : Binding des paramètres de formulaire =====
-            Class<?>[] paramTypes = method.getParameterTypes();
-            java.lang.reflect.Parameter[] parameters = method.getParameters();
-            Object[] args = new Object[paramTypes.length];
-
-            for (int i = 0; i < paramTypes.length; i++) {
-                String paramKey;
-
-                // Sprint 6-bis : annotation @RequestParam
-                if (parameters[i].isAnnotationPresent(RequestParam.class)) {
-                    RequestParam annotation = parameters[i].getAnnotation(RequestParam.class);
-                    paramKey = annotation.value();
-                } 
-                else {
-                    paramKey = parameters[i].getName(); // Sprint 6 : nom du paramètre Java
-                }
-
-                String value = req.getParameter(paramKey);
-
-                if (value == null) {
-                    args[i] = null;
-                    continue;
-                }
-
-                // Conversion automatique
-                if (paramTypes[i] == String.class) args[i] = value;
-                else if (paramTypes[i] == int.class || paramTypes[i] == Integer.class) args[i] = Integer.parseInt(value);
-                else if (paramTypes[i] == double.class || paramTypes[i] == Double.class) args[i] = Double.parseDouble(value);
-                else args[i] = value;
-            }
-
-            Object result;
-
-            // Si la méthode accepte (HttpServletRequest, HttpServletResponse)
-            if (method.getParameterCount() == 2 &&
-                method.getParameterTypes()[0] == HttpServletRequest.class &&
-                method.getParameterTypes()[1] == HttpServletResponse.class) {
-
-                result = method.invoke(controllerInstance, req, resp);
-            } 
-            else {
-                result = method.invoke(controllerInstance, args);
-            }
-
-            // Gestion ModelView
-            if (result instanceof ModelView mv) {
-                for (Map.Entry<String, Object> entry : mv.getData().entrySet()) {
-                    req.setAttribute(entry.getKey(), entry.getValue());
-                }
-                RequestDispatcher dispatcher = req.getRequestDispatcher(mv.getView());
-                dispatcher.forward(req, resp);
-                return;
-            }
-
-            if (result != null) {
-                resp.getWriter().println(result.toString());
-            }
-
-        } catch (Exception e) {
-            resp.getWriter().println("<pre>" + e.getMessage() + "</pre>");
-            e.printStackTrace();
-        }
-        return;
-    }
+    invokeMethod(controllerClass, method, req, resp);
+    return;
+}
 
 
     // ====================================================================================
@@ -387,10 +435,8 @@ if (controllerClass == null) continue;
                     break;
                 }
 
-                if (paramTypes[i] == String.class) args[i] = rawValue;
-                else if (paramTypes[i] == int.class || paramTypes[i] == Integer.class) args[i] = Integer.parseInt(rawValue);
-                else if (paramTypes[i] == double.class || paramTypes[i] == Double.class) args[i] = Double.parseDouble(rawValue);
-                else args[i] = rawValue;
+                args[i] = convertValue(paramTypes[i], rawValue);
+
             }
 
             if (!allDynamicParamsFound) continue;
