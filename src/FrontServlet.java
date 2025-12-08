@@ -108,6 +108,65 @@ public class FrontServlet extends HttpServlet {
         }
     }
 
+    private String toJson(Object obj) {
+    if (obj == null) return "null";
+
+    if (obj instanceof String s)
+        return "\"" + s.replace("\"", "\\\"") + "\"";
+
+    if (obj instanceof Number || obj instanceof Boolean)
+        return obj.toString();
+
+    if (obj instanceof java.util.Map<?,?> map) {
+        StringBuilder sb = new StringBuilder("{");
+        boolean first = true;
+        for (var e : map.entrySet()) {
+            if (!first) sb.append(",");
+            sb.append("\"").append(e.getKey()).append("\":");
+            sb.append(toJson(e.getValue()));
+            first = false;
+        }
+        sb.append("}");
+        return sb.toString();
+    }
+
+    if (obj instanceof java.util.List<?> list) {
+        StringBuilder sb = new StringBuilder("[");
+        boolean first = true;
+        for (var item : list) {
+            if (!first) sb.append(",");
+            sb.append(toJson(item));
+            first = false;
+        }
+        sb.append("]");
+        return sb.toString();
+    }
+
+    // Objet POJO → sérialisation par réflexion
+    StringBuilder sb = new StringBuilder("{");
+    var fields = obj.getClass().getDeclaredFields();
+    boolean first = true;
+
+    for (var f : fields) {
+        try {
+            f.setAccessible(true);
+            Object value = f.get(obj);
+
+            if (!first) sb.append(",");
+
+            sb.append("\"").append(f.getName()).append("\":");
+            sb.append(toJson(value));
+
+            first = false;
+
+        } catch (Exception ignored) {}
+    }
+
+    sb.append("}");
+    return sb.toString();
+}
+
+
     private void invokeMethod(Class<?> controllerClass, Method method,
                           HttpServletRequest req, HttpServletResponse resp)
         throws ServletException, IOException {
@@ -185,6 +244,32 @@ public class FrontServlet extends HttpServlet {
 
 
         Object result = method.invoke(controller, args);
+
+                // ======== SPRINT 9 : Gestion JSON ========
+        if (method.isAnnotationPresent(Json.class)) {
+            resp.setContentType("application/json;charset=UTF-8");
+
+            Object jsonData;
+
+            // Si c'est un ModelView → retourner seulement les données
+            if (result instanceof ModelView mv) {
+                jsonData = mv.getData();
+            } else {
+                jsonData = result; // Objet simple
+            }
+
+            String json = toJson(jsonData);
+
+            resp.getWriter().write("""
+                {
+                    "status": "success",
+                    "code": 200,
+                    "data": """ + json + """
+                }
+            """);
+            return; // IMPORTANT : ne pas continuer vers JSP
+        }
+
 
         if (result instanceof ModelView mv) {
             for (var e : mv.getData().entrySet()) {
