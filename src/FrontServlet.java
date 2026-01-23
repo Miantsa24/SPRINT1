@@ -1,17 +1,22 @@
 package src;
 
 import jakarta.servlet.*;
+import jakarta.servlet.annotation.MultipartConfig;
 import jakarta.servlet.http.*;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.lang.reflect.Method;
+import java.lang.reflect.ParameterizedType;
+import java.lang.reflect.Type;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.Set;
+import java.util.ArrayList;
+import java.util.List;
 
 
-
+@MultipartConfig
 public class FrontServlet extends HttpServlet {
     private final Map<String, Class<?>> controllerMap = new HashMap<>();
     private final Map<String, Method> methodMap = new HashMap<>();
@@ -20,6 +25,9 @@ public class FrontServlet extends HttpServlet {
     private final Map<String, Method> dynamicGetMap = new HashMap<>();
     private final Map<String, Method> dynamicPostMap = new HashMap<>();
 
+    // ======== SPRINT 10 : Limite taille fichiers multiples ========
+    private static final int MAX_FILES_PER_INPUT = 10; // Limite configurable
+    private static final long MAX_FILE_SIZE = 10 * 1024 * 1024; // 10 MB par fichier
 
 
     @Override
@@ -36,6 +44,8 @@ public class FrontServlet extends HttpServlet {
 
         ctx.setAttribute("routeControllers", controllerMap);
         ctx.setAttribute("routeMethods", methodMap);
+    
+
     }
 
     private void scanResources(String path, ServletContext ctx) {
@@ -167,6 +177,117 @@ public class FrontServlet extends HttpServlet {
 }
 
 
+    // ========================================================================
+    // SPRINT 10 : DÉTECTION DU TYPE GÉNÉRIQUE DU MAP
+    // ========================================================================
+    /**
+     * Détermine si un paramètre Map est destiné aux fichiers ou aux paramètres
+     * 
+     * @return "files" si Map<String, byte[]> ou Map<String, byte[][]>
+     *         "params" si Map<String, Object>
+     *         null sinon
+     */
+    private String detectMapType(java.lang.reflect.Parameter param) {
+        Type genericType = param.getParameterizedType();
+        
+        if (!(genericType instanceof ParameterizedType)) {
+            return null; // Map raw, on ignore
+        }
+
+        ParameterizedType paramType = (ParameterizedType) genericType;
+        Type[] typeArgs = paramType.getActualTypeArguments();
+
+        if (typeArgs.length != 2) return null;
+        
+        // Premier type doit être String
+        if (!typeArgs[0].equals(String.class)) return null;
+
+        Type valueType = typeArgs[1];
+
+        // Map<String, byte[]> → fichiers simples
+        if (valueType.equals(byte[].class)) {
+            return "files";
+        }
+
+        // Map<String, byte[][]> → fichiers multiples
+        if (valueType.equals(byte[][].class)) {
+            return "files_multi";
+        }
+
+        // Map<String, Object> → paramètres
+        if (valueType.equals(Object.class)) {
+            return "params";
+        }
+
+        return null;
+    }
+
+
+    // ========================================================================
+    // SPRINT 10 : EXTRACTION DES FICHIERS ET PARAMÈTRES MULTIPART
+    // ========================================================================
+    /**
+     * Parse une requête multipart et sépare paramètres texte et fichiers
+     */
+    private MultipartData parseMultipartRequest(HttpServletRequest req) throws Exception {
+        Map<String, Object> params = new HashMap<>();
+        Map<String, byte[]> files = new HashMap<>();
+        Map<String, List<byte[]>> filesMulti = new HashMap<>();
+
+        for (Part part : req.getParts()) {
+            String fieldName = part.getName();
+            String fileName = part.getSubmittedFileName();
+
+            if (fileName != null && !fileName.isEmpty()) {
+                // C'EST UN FICHIER
+                
+                // Vérification taille
+                if (part.getSize() > MAX_FILE_SIZE) {
+                    log("Fichier " + fileName + " trop volumineux, ignoré");
+                    continue;
+                }
+
+                byte[] fileContent = part.getInputStream().readAllBytes();
+
+                // Stockage simple (écrasement)
+                files.put(fieldName, fileContent);
+
+                // Stockage multiple
+                filesMulti.putIfAbsent(fieldName, new ArrayList<>());
+                List<byte[]> fileList = filesMulti.get(fieldName);
+                
+                if (fileList.size() < MAX_FILES_PER_INPUT) {
+                    fileList.add(fileContent);
+                } else {
+                    log("Limite de " + MAX_FILES_PER_INPUT + " fichiers atteinte pour " + fieldName);
+                }
+
+            } else {
+                // C'EST UN CHAMP TEXTE
+                String value = new String(part.getInputStream().readAllBytes(), "UTF-8");
+                params.put(fieldName, value);
+            }
+        }
+
+        return new MultipartData(params, files, filesMulti);
+    }
+
+    /**
+     * Classe interne pour encapsuler les données multipart
+     */
+    private static class MultipartData {
+        final Map<String, Object> params;
+        final Map<String, byte[]> files;
+        final Map<String, List<byte[]>> filesMulti;
+
+        MultipartData(Map<String, Object> params, Map<String, byte[]> files, Map<String, List<byte[]>> filesMulti) {
+            this.params = params;
+            this.files = files;
+            this.filesMulti = filesMulti;
+        }
+    }
+
+
     private void invokeMethod(Class<?> controllerClass, Method method,
                           HttpServletRequest req, HttpServletResponse resp)
         throws ServletException, IOException {
@@ -174,12 +295,110 @@ public class FrontServlet extends HttpServlet {
     try {
         Object controller = controllerClass.getDeclaredConstructor().newInstance();
 
-        // binding Sprint 6 + 6bis
+        // ========================================================================
+        // SPRINT 10 : DÉTECTION MULTIPART
+        // ========================================================================
+        boolean isMultipart = false;
+        MultipartData multipartData = null;
+
+        String contentType = req.getContentType();
+        if (contentType != null && contentType.toLowerCase().startsWith("multipart/form-data")) {
+            isMultipart = true;
+            try {
+                multipartData = parseMultipartRequest(req);
+            } catch (Exception e) {
+                log("Erreur parsing multipart: " + e.getMessage());
+                resp.getWriter().println("<pre>Erreur upload: " + e.getMessage() + "</pre>");
+                return;
+            }
+        }
+
+        // binding Sprint 6 + 6bis + 8 + 8bis + 10
         Class<?>[] paramTypes = method.getParameterTypes();
         java.lang.reflect.Parameter[] params = method.getParameters();
         Object[] args = new Object[paramTypes.length];
 
     for (int i = 0; i < params.length; i++) {
+
+        // ========================================================================
+        // SPRINT 10 : INJECTION MAP SELON TYPE GÉNÉRIQUE
+        // ========================================================================
+        if (paramTypes[i] == Map.class) {
+            String mapType = detectMapType(params[i]);
+
+            if (mapType == null) {
+                // Map raw ou type inconnu, comportement par défaut (Sprint 8)
+                if (!isMultipart) {
+                    Map<String, Object> allParams = new HashMap<>();
+                    Map<String, String[]> raw = req.getParameterMap();
+                    for (String key : raw.keySet()) {
+                        String[] values = raw.get(key);
+                        if (values == null) {
+                            allParams.put(key, null);
+                        } else if (values.length == 1) {
+                            allParams.put(key, values[0]);
+                        } else {
+                            allParams.put(key, values);
+                        }
+                    }
+                    args[i] = allParams;
+                } else {
+                    args[i] = multipartData.params;
+                }
+                continue;
+            }
+
+            // Map<String, Object> → paramètres texte
+            if (mapType.equals("params")) {
+                if (isMultipart) {
+                    args[i] = multipartData.params;
+                } else {
+                    // Mode normal (non-multipart)
+                    Map<String, Object> allParams = new HashMap<>();
+                    Map<String, String[]> raw = req.getParameterMap();
+                    for (String key : raw.keySet()) {
+                        String[] values = raw.get(key);
+                        if (values == null) {
+                            allParams.put(key, null);
+                        } else if (values.length == 1) {
+                            allParams.put(key, values[0]);
+                        } else {
+                            allParams.put(key, values);
+                        }
+                    }
+                    args[i] = allParams;
+                }
+                continue;
+            }
+
+            // Map<String, byte[]> → fichiers (dernier gagne)
+            if (mapType.equals("files")) {
+                if (isMultipart) {
+                    args[i] = multipartData.files;
+                } else {
+                    args[i] = new HashMap<String, byte[]>(); // Map vide si pas multipart
+                }
+                continue;
+            }
+
+            // Map<String, byte[][]> → fichiers multiples
+            if (mapType.equals("files_multi")) {
+                if (isMultipart) {
+                    // Convertir List<byte[]> en byte[][]
+                    Map<String, byte[][]> filesArray = new HashMap<>();
+                    for (Map.Entry<String, List<byte[]>> entry : multipartData.filesMulti.entrySet()) {
+                        List<byte[]> fileList = entry.getValue();
+                        byte[][] arrayOfArrays = fileList.toArray(new byte[0][]);
+                        filesArray.put(entry.getKey(), arrayOfArrays);
+                    }
+                    args[i] = filesArray;
+                } else {
+                    args[i] = new HashMap<String, byte[][]>(); // Map vide si pas multipart
+                }
+                continue;
+            }
+        }
+
 
         // === Sprint 8 bis : objets complexes ===
         if (!paramTypes[i].isPrimitive()
@@ -191,32 +410,7 @@ public class FrontServlet extends HttpServlet {
             // nom du paramètre = préfixe utilisé dans le formulaire
             String prefix = params[i].getName();
 
-            args[i] = bindObject(paramTypes[i], prefix, req);
-            continue;
-        }
-
-
-        // === SPRINT 8 : injection automatique Map<String,Object> ===
-        if (paramTypes[i] == Map.class) {
-            Map<String, Object> allParams = new HashMap<>();
-
-            Map<String, String[]> raw = req.getParameterMap();
-
-            for (String key : raw.keySet()) {
-                String[] values = raw.get(key);
-
-                if (values == null) {
-                    allParams.put(key, null);
-                }
-                else if (values.length == 1) {
-                    allParams.put(key, values[0]);   // Une seule valeur -> String
-                }
-                else {
-                    allParams.put(key, values);      // Plusieurs valeurs -> String[]
-                }
-            }
-
-            args[i] = allParams;
+            args[i] = bindObject(paramTypes[i], prefix, req, isMultipart, multipartData);
             continue;
         }
 
@@ -229,7 +423,15 @@ public class FrontServlet extends HttpServlet {
             key = params[i].getName();
         }
 
-        String value = req.getParameter(key);
+        String value;
+        
+        // En mode multipart, récupérer depuis multipartData.params
+        if (isMultipart && multipartData != null && multipartData.params.containsKey(key)) {
+            Object obj = multipartData.params.get(key);
+            value = (obj != null) ? obj.toString() : null;
+        } else {
+            value = req.getParameter(key);
+        }
 
         if (value == null) {
             args[i] = null;
@@ -368,12 +570,28 @@ private void setFieldValue(Object target, String path, String value)
 }
 
 
-private Object bindObject(Class<?> type, String prefix, HttpServletRequest req)
+private Object bindObject(Class<?> type, String prefix, HttpServletRequest req,
+                         boolean isMultipart, MultipartData multipartData)
         throws Exception {
 
     Object instance = type.getDeclaredConstructor().newInstance();
 
-    Map<String, String[]> params = req.getParameterMap();
+    Map<String, String[]> params;
+    
+    if (isMultipart && multipartData != null) {
+        // Convertir Map<String, Object> en Map<String, String[]>
+        params = new HashMap<>();
+        for (Map.Entry<String, Object> entry : multipartData.params.entrySet()) {
+            Object value = entry.getValue();
+            if (value instanceof String) {
+                params.put(entry.getKey(), new String[]{(String) value});
+            } else if (value instanceof String[]) {
+                params.put(entry.getKey(), (String[]) value);
+            }
+        }
+    } else {
+        params = req.getParameterMap();
+    }
 
     for (String fullKey : params.keySet()) {
 
@@ -384,6 +602,12 @@ private Object bindObject(Class<?> type, String prefix, HttpServletRequest req)
     }
 
     return instance;
+}
+
+// Surcharge pour compatibilité avec anciens appels
+private Object bindObject(Class<?> type, String prefix, HttpServletRequest req)
+        throws Exception {
+    return bindObject(type, prefix, req, false, null);
 }
 
 
