@@ -342,7 +342,6 @@ public class FrontServlet extends HttpServlet {
             isMultipart = true;
             try {
                 multipartData = parseMultipartRequest(req);
-                // Stocker les noms de fichiers dans les attributs de requête
                 if (multipartData.fileNames != null && !multipartData.fileNames.isEmpty()) {
                     req.setAttribute("__uploadedFileNames", multipartData.fileNames);
                 }
@@ -438,15 +437,47 @@ public class FrontServlet extends HttpServlet {
         };
         // ──────────────────────────────────────────────────────────────
 
+        // ──────────────────────────────────────────────────────────────
+        // SPRINT 11 bis : VÉRIFICATION DE SÉCURITÉ AVANT EXÉCUTION
+        // ──────────────────────────────────────────────────────────────
+        boolean isAuthorized = method.isAnnotationPresent(Authorized.class);
+        String requiredRole = null;
+
+        if (method.isAnnotationPresent(Role.class)) {
+            requiredRole = method.getAnnotation(Role.class).value();
+            isAuthorized = true; // @Role implique aussi @Authorized
+        }
+
+        if (isAuthorized) {
+            String currentRole = (String) realSession.getAttribute("role");
+
+            // Cas 1 : @Authorized seul → vérifier connexion
+            if (requiredRole == null) {
+                if (currentRole == null) {
+                    RequestDispatcher rd = req.getRequestDispatcher("/error401.jsp");
+                    rd.forward(req, resp);
+                    return;
+                }
+            }
+            // Cas 2 : @Role spécifique → vérifier rôle exact
+            else {
+                if (currentRole == null || !currentRole.equals(requiredRole)) {
+                    req.setAttribute("requiredRole", requiredRole);
+                    RequestDispatcher rd = req.getRequestDispatcher("/error403.jsp");
+                    rd.forward(req, resp);
+                    return;
+                }
+            }
+        }
+        // ──────────────────────────────────────────────────────────────
+
         Class<?>[] paramTypes = method.getParameterTypes();
         java.lang.reflect.Parameter[] parameters = method.getParameters();
         Object[] args = new Object[paramTypes.length];
 
         for (int i = 0; i < parameters.length; i++) {
 
-            // ──────────────────────────────────────────────────────────────
             // SPRINT 11 : Détection et injection @Session
-            // ──────────────────────────────────────────────────────────────
             if (parameters[i].isAnnotationPresent(Session.class)) {
                 Type genericType = parameters[i].getParameterizedType();
                 if (genericType instanceof ParameterizedType pType) {
@@ -458,12 +489,10 @@ public class FrontServlet extends HttpServlet {
                         continue;
                     }
                 }
-                // Sécurité : on refuse si ce n'est pas Map<String, Object>
                 throw new IllegalArgumentException(
-                    "@Session ne peut être utilisé que sur un paramètre de type Map<String, Object>"
+                    "@Session ne peut être utilisé que sur Map<String, Object>"
                 );
             }
-            // ──────────────────────────────────────────────────────────────
 
             // Support injection HttpServletRequest / HttpServletResponse
             if (paramTypes[i] == HttpServletRequest.class) {
@@ -475,28 +504,13 @@ public class FrontServlet extends HttpServlet {
                 continue;
             }
 
-            // ========================================================================
-            // SPRINT 10 : INJECTION MAP SELON TYPE GÉNÉRIQUE
-            // ========================================================================
+            // SPRINT 10 : Injection Map selon type générique
             if (paramTypes[i] == Map.class) {
                 String mapType = detectMapType(parameters[i]);
 
                 if (mapType == null) {
-                    // Map raw ou type inconnu → comportement par défaut
                     if (!isMultipart) {
-                        Map<String, Object> allParams = new HashMap<>();
-                        Map<String, String[]> raw = req.getParameterMap();
-                        for (String key : raw.keySet()) {
-                            String[] values = raw.get(key);
-                            if (values == null) {
-                                allParams.put(key, null);
-                            } else if (values.length == 1) {
-                                allParams.put(key, values[0]);
-                            } else {
-                                allParams.put(key, values);
-                            }
-                        }
-                        args[i] = allParams;
+                        args[i] = getAllParamsAsMap(req);
                     } else {
                         args[i] = multipartData.params;
                     }
@@ -528,7 +542,7 @@ public class FrontServlet extends HttpServlet {
                 }
             }
 
-            // === Sprint 8 bis : objets complexes (POJO) ===
+            // Sprint 8 bis : objets complexes (POJO)
             if (!paramTypes[i].isPrimitive()
                 && paramTypes[i] != String.class
                 && paramTypes[i] != Map.class
@@ -540,7 +554,7 @@ public class FrontServlet extends HttpServlet {
                 continue;
             }
 
-            // Paramètres simples (@RequestParam ou par nom)
+            // Paramètres simples (@RequestParam ou nom)
             String key = parameters[i].isAnnotationPresent(RequestParam.class)
                     ? parameters[i].getAnnotation(RequestParam.class).value()
                     : parameters[i].getName();
@@ -564,16 +578,14 @@ public class FrontServlet extends HttpServlet {
             else args[i] = value;
         }
 
-        // Appel de la méthode du contrôleur
+        // Appel de la méthode (seulement si sécurité OK)
         Object result = method.invoke(controller, args);
 
         // ======== SPRINT 9 : Gestion JSON ========
         if (method.isAnnotationPresent(Json.class)) {
             resp.setContentType("application/json;charset=UTF-8");
-
             Object jsonData = (result instanceof ModelView mv) ? mv.getData() : result;
             String json = toJson(jsonData);
-
             resp.getWriter().write("""
                 {
                     "status": "success",
@@ -600,7 +612,7 @@ public class FrontServlet extends HttpServlet {
         }
 
     } catch (Exception e) {
-        e.printStackTrace(); // pour debug
+        e.printStackTrace();
         resp.getWriter().println("<pre>Erreur dans invokeMethod : " + e + "</pre>");
     }
 }
