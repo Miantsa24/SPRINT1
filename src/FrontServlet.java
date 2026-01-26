@@ -10,9 +10,14 @@ import java.lang.reflect.ParameterizedType;
 import jakarta.servlet.annotation.MultipartConfig;
 import java.lang.reflect.Type;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Set;
+import java.util.AbstractMap;
 import java.util.ArrayList;
+import java.util.Collection;
+import java.util.Enumeration;
 import java.util.List;
 
 
@@ -303,6 +308,21 @@ public class FrontServlet extends HttpServlet {
         }
     }
 
+    private Map<String, Object> getAllParamsAsMap(HttpServletRequest req) {
+    Map<String, Object> allParams = new HashMap<>();
+    Map<String, String[]> raw = req.getParameterMap();
+    for (String key : raw.keySet()) {
+        String[] values = raw.get(key);
+        if (values == null) {
+            allParams.put(key, null);
+        } else if (values.length == 1) {
+            allParams.put(key, values[0]);
+        } else {
+            allParams.put(key, values);
+        }
+    }
+    return allParams;
+}
 
     private void invokeMethod(Class<?> controllerClass, Method method,
                           HttpServletRequest req, HttpServletResponse resp)
@@ -322,7 +342,7 @@ public class FrontServlet extends HttpServlet {
             isMultipart = true;
             try {
                 multipartData = parseMultipartRequest(req);
-                // Stocker les noms de fichiers dans les attributs de requête pour que le controller puisse y accéder
+                // Stocker les noms de fichiers dans les attributs de requête
                 if (multipartData.fileNames != null && !multipartData.fileNames.isEmpty()) {
                     req.setAttribute("__uploadedFileNames", multipartData.fileNames);
                 }
@@ -336,164 +356,222 @@ public class FrontServlet extends HttpServlet {
             }
         }
 
-        // binding Sprint 6 + 6bis + 8 + 8bis + 10
+        // ──────────────────────────────────────────────────────────────
+        // SPRINT 11 : Création du wrapper session inline (Map synchronisée)
+        // ──────────────────────────────────────────────────────────────
+        HttpSession realSession = req.getSession();
+
+        Map<String, Object> sessionMap = new Map<String, Object>() {
+            private final HttpSession session = realSession;
+
+            @Override public int size() {
+                int count = 0;
+                for (Enumeration<String> e = session.getAttributeNames(); e.hasMoreElements(); e.nextElement()) count++;
+                return count;
+            }
+
+            @Override public boolean isEmpty() {
+                return !session.getAttributeNames().hasMoreElements();
+            }
+
+            @Override public boolean containsKey(Object key) {
+                return session.getAttribute(String.valueOf(key)) != null;
+            }
+
+            @Override public boolean containsValue(Object value) {
+                for (Enumeration<String> e = session.getAttributeNames(); e.hasMoreElements(); ) {
+                    if (Objects.equals(session.getAttribute(e.nextElement()), value)) return true;
+                }
+                return false;
+            }
+
+            @Override public Object get(Object key) {
+                return session.getAttribute(String.valueOf(key));
+            }
+
+            @Override public Object put(String key, Object value) {
+                Object old = session.getAttribute(key);
+                session.setAttribute(key, value);
+                return old;
+            }
+
+            @Override public Object remove(Object key) {
+                Object old = session.getAttribute(String.valueOf(key));
+                session.removeAttribute(String.valueOf(key));
+                return old;
+            }
+
+            @Override public void putAll(Map<? extends String, ?> m) {
+                m.forEach(session::setAttribute);
+            }
+
+            @Override public void clear() {
+                for (Enumeration<String> e = session.getAttributeNames(); e.hasMoreElements(); ) {
+                    session.removeAttribute(e.nextElement());
+                }
+            }
+
+            @Override public Set<String> keySet() {
+                Set<String> keys = new HashSet<>();
+                for (Enumeration<String> e = session.getAttributeNames(); e.hasMoreElements(); ) {
+                    keys.add(e.nextElement());
+                }
+                return keys;
+            }
+
+            @Override public Collection<Object> values() {
+                List<Object> values = new ArrayList<>();
+                for (Enumeration<String> e = session.getAttributeNames(); e.hasMoreElements(); ) {
+                    values.add(session.getAttribute(e.nextElement()));
+                }
+                return values;
+            }
+
+            @Override public Set<Entry<String, Object>> entrySet() {
+                Set<Entry<String, Object>> entries = new HashSet<>();
+                for (Enumeration<String> e = session.getAttributeNames(); e.hasMoreElements(); ) {
+                    String k = e.nextElement();
+                    entries.add(new AbstractMap.SimpleEntry<>(k, session.getAttribute(k)));
+                }
+                return entries;
+            }
+        };
+        // ──────────────────────────────────────────────────────────────
+
         Class<?>[] paramTypes = method.getParameterTypes();
-        java.lang.reflect.Parameter[] params = method.getParameters();
+        java.lang.reflect.Parameter[] parameters = method.getParameters();
         Object[] args = new Object[paramTypes.length];
 
-    for (int i = 0; i < params.length; i++) {
+        for (int i = 0; i < parameters.length; i++) {
 
-        // Support injection automatique de HttpServletRequest et HttpServletResponse
-if (paramTypes[i] == HttpServletRequest.class) {
-    args[i] = req;
-    continue;
-}
+            // ──────────────────────────────────────────────────────────────
+            // SPRINT 11 : Détection et injection @Session
+            // ──────────────────────────────────────────────────────────────
+            if (parameters[i].isAnnotationPresent(Session.class)) {
+                Type genericType = parameters[i].getParameterizedType();
+                if (genericType instanceof ParameterizedType pType) {
+                    Type[] typeArgs = pType.getActualTypeArguments();
+                    if (typeArgs.length == 2 &&
+                        typeArgs[0].equals(String.class) &&
+                        typeArgs[1].equals(Object.class)) {
+                        args[i] = sessionMap;
+                        continue;
+                    }
+                }
+                // Sécurité : on refuse si ce n'est pas Map<String, Object>
+                throw new IllegalArgumentException(
+                    "@Session ne peut être utilisé que sur un paramètre de type Map<String, Object>"
+                );
+            }
+            // ──────────────────────────────────────────────────────────────
 
-if (paramTypes[i] == HttpServletResponse.class) {
-    args[i] = resp;
-    continue;
-}
+            // Support injection HttpServletRequest / HttpServletResponse
+            if (paramTypes[i] == HttpServletRequest.class) {
+                args[i] = req;
+                continue;
+            }
+            if (paramTypes[i] == HttpServletResponse.class) {
+                args[i] = resp;
+                continue;
+            }
 
-        // ========================================================================
-        // SPRINT 10 : INJECTION MAP SELON TYPE GÉNÉRIQUE
-        // ========================================================================
-        if (paramTypes[i] == Map.class) {
-            String mapType = detectMapType(params[i]);
+            // ========================================================================
+            // SPRINT 10 : INJECTION MAP SELON TYPE GÉNÉRIQUE
+            // ========================================================================
+            if (paramTypes[i] == Map.class) {
+                String mapType = detectMapType(parameters[i]);
 
-            if (mapType == null) {
-                // Map raw ou type inconnu, comportement par défaut (Sprint 8)
-                if (!isMultipart) {
-                    Map<String, Object> allParams = new HashMap<>();
-                    Map<String, String[]> raw = req.getParameterMap();
-                    for (String key : raw.keySet()) {
-                        String[] values = raw.get(key);
-                        if (values == null) {
-                            allParams.put(key, null);
-                        } else if (values.length == 1) {
-                            allParams.put(key, values[0]);
-                        } else {
-                            allParams.put(key, values);
+                if (mapType == null) {
+                    // Map raw ou type inconnu → comportement par défaut
+                    if (!isMultipart) {
+                        Map<String, Object> allParams = new HashMap<>();
+                        Map<String, String[]> raw = req.getParameterMap();
+                        for (String key : raw.keySet()) {
+                            String[] values = raw.get(key);
+                            if (values == null) {
+                                allParams.put(key, null);
+                            } else if (values.length == 1) {
+                                allParams.put(key, values[0]);
+                            } else {
+                                allParams.put(key, values);
+                            }
                         }
+                        args[i] = allParams;
+                    } else {
+                        args[i] = multipartData.params;
                     }
-                    args[i] = allParams;
-                } else {
-                    args[i] = multipartData.params;
+                    continue;
                 }
-                continue;
-            }
 
-            // Map<String, Object> → paramètres texte
-            if (mapType.equals("params")) {
-                if (isMultipart) {
-                    args[i] = multipartData.params;
-                } else {
-                    // Mode normal (non-multipart)
-                    Map<String, Object> allParams = new HashMap<>();
-                    Map<String, String[]> raw = req.getParameterMap();
-                    for (String key : raw.keySet()) {
-                        String[] values = raw.get(key);
-                        if (values == null) {
-                            allParams.put(key, null);
-                        } else if (values.length == 1) {
-                            allParams.put(key, values[0]);
-                        } else {
-                            allParams.put(key, values);
+                if (mapType.equals("params")) {
+                    args[i] = isMultipart ? multipartData.params : getAllParamsAsMap(req);
+                    continue;
+                }
+
+                if (mapType.equals("files")) {
+                    args[i] = isMultipart ? multipartData.files : new HashMap<String, byte[]>();
+                    continue;
+                }
+
+                if (mapType.equals("files_multi")) {
+                    if (isMultipart) {
+                        Map<String, byte[][]> filesArray = new HashMap<>();
+                        for (Map.Entry<String, List<byte[]>> entry : multipartData.filesMulti.entrySet()) {
+                            List<byte[]> list = entry.getValue();
+                            filesArray.put(entry.getKey(), list.toArray(new byte[0][]));
                         }
+                        args[i] = filesArray;
+                    } else {
+                        args[i] = new HashMap<String, byte[][]>();
                     }
-                    args[i] = allParams;
+                    continue;
                 }
+            }
+
+            // === Sprint 8 bis : objets complexes (POJO) ===
+            if (!paramTypes[i].isPrimitive()
+                && paramTypes[i] != String.class
+                && paramTypes[i] != Map.class
+                && !paramTypes[i].isArray()
+                && !paramTypes[i].getName().startsWith("java.")) {
+
+                String prefix = parameters[i].getName();
+                args[i] = bindObject(paramTypes[i], prefix, req, isMultipart, multipartData);
                 continue;
             }
 
-            // Map<String, byte[]> → fichiers (dernier gagne)
-            if (mapType.equals("files")) {
-                if (isMultipart) {
-                    args[i] = multipartData.files;
-                } else {
-                    args[i] = new HashMap<String, byte[]>(); // Map vide si pas multipart
-                }
+            // Paramètres simples (@RequestParam ou par nom)
+            String key = parameters[i].isAnnotationPresent(RequestParam.class)
+                    ? parameters[i].getAnnotation(RequestParam.class).value()
+                    : parameters[i].getName();
+
+            String value;
+            if (isMultipart && multipartData != null && multipartData.params.containsKey(key)) {
+                Object obj = multipartData.params.get(key);
+                value = (obj != null) ? obj.toString() : null;
+            } else {
+                value = req.getParameter(key);
+            }
+
+            if (value == null) {
+                args[i] = null;
                 continue;
             }
 
-            // Map<String, byte[][]> → fichiers multiples
-            if (mapType.equals("files_multi")) {
-                if (isMultipart) {
-                    // Convertir List<byte[]> en byte[][]
-                    Map<String, byte[][]> filesArray = new HashMap<>();
-                    for (Map.Entry<String, List<byte[]>> entry : multipartData.filesMulti.entrySet()) {
-                        List<byte[]> fileList = entry.getValue();
-                        byte[][] arrayOfArrays = fileList.toArray(new byte[0][]);
-                        filesArray.put(entry.getKey(), arrayOfArrays);
-                    }
-                    args[i] = filesArray;
-                } else {
-                    args[i] = new HashMap<String, byte[][]>(); // Map vide si pas multipart
-                }
-                continue;
-            }
+            if (paramTypes[i] == String.class) args[i] = value;
+            else if (paramTypes[i] == int.class || paramTypes[i] == Integer.class) args[i] = Integer.parseInt(value);
+            else if (paramTypes[i] == double.class || paramTypes[i] == Double.class) args[i] = Double.parseDouble(value);
+            else args[i] = value;
         }
 
-
-        // === Sprint 8 bis : objets complexes ===
-        if (!paramTypes[i].isPrimitive()
-            && paramTypes[i] != String.class
-            && paramTypes[i] != Map.class
-            && !paramTypes[i].isArray()
-            && !paramTypes[i].getName().startsWith("java.")) {
-
-            // nom du paramètre = préfixe utilisé dans le formulaire
-            String prefix = params[i].getName();
-
-            args[i] = bindObject(paramTypes[i], prefix, req, isMultipart, multipartData);
-            continue;
-        }
-
-
-        String key;
-
-        if (params[i].isAnnotationPresent(RequestParam.class)) {
-            key = params[i].getAnnotation(RequestParam.class).value();
-        } else {
-            key = params[i].getName();
-        }
-
-        String value;
-        
-        // En mode multipart, récupérer depuis multipartData.params
-        if (isMultipart && multipartData != null && multipartData.params.containsKey(key)) {
-            Object obj = multipartData.params.get(key);
-            value = (obj != null) ? obj.toString() : null;
-        } else {
-            value = req.getParameter(key);
-        }
-
-        if (value == null) {
-            args[i] = null;
-            continue;
-        }
-
-        if (paramTypes[i] == String.class) args[i] = value;
-        else if (paramTypes[i] == int.class || paramTypes[i] == Integer.class) args[i] = Integer.parseInt(value);
-        else if (paramTypes[i] == double.class || paramTypes[i] == Double.class) args[i] = Double.parseDouble(value);
-        else args[i] = value;
-    }
-
-
+        // Appel de la méthode du contrôleur
         Object result = method.invoke(controller, args);
 
-                // ======== SPRINT 9 : Gestion JSON ========
+        // ======== SPRINT 9 : Gestion JSON ========
         if (method.isAnnotationPresent(Json.class)) {
             resp.setContentType("application/json;charset=UTF-8");
 
-            Object jsonData;
-
-            // Si c'est un ModelView → retourner seulement les données
-            if (result instanceof ModelView mv) {
-                jsonData = mv.getData();
-            } else {
-                jsonData = result; // Objet simple
-            }
-
+            Object jsonData = (result instanceof ModelView mv) ? mv.getData() : result;
             String json = toJson(jsonData);
 
             resp.getWriter().write("""
@@ -503,10 +581,10 @@ if (paramTypes[i] == HttpServletResponse.class) {
                     "data": """ + json + """
                 }
             """);
-            return; // IMPORTANT : ne pas continuer vers JSP
+            return;
         }
 
-
+        // Gestion ModelView
         if (result instanceof ModelView mv) {
             for (var e : mv.getData().entrySet()) {
                 req.setAttribute(e.getKey(), e.getValue());
@@ -516,12 +594,14 @@ if (paramTypes[i] == HttpServletResponse.class) {
             return;
         }
 
+        // Cas simple : texte brut
         if (result != null) {
             resp.getWriter().println(result.toString());
         }
 
     } catch (Exception e) {
-        resp.getWriter().println("<pre>" + e + "</pre>");
+        e.printStackTrace(); // pour debug
+        resp.getWriter().println("<pre>Erreur dans invokeMethod : " + e + "</pre>");
     }
 }
 
