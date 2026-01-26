@@ -1,13 +1,13 @@
 package src;
 
 import jakarta.servlet.*;
-import jakarta.servlet.annotation.MultipartConfig;
 import jakarta.servlet.http.*;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.lang.reflect.Method;
 import java.lang.reflect.ParameterizedType;
+import jakarta.servlet.annotation.MultipartConfig;
 import java.lang.reflect.Type;
 import java.util.HashMap;
 import java.util.Map;
@@ -16,7 +16,11 @@ import java.util.ArrayList;
 import java.util.List;
 
 
-@MultipartConfig
+@MultipartConfig(
+    maxFileSize = 10 * 1024 * 1024,      // 10 MB par fichier
+    maxRequestSize = 50 * 1024 * 1024,   // 50 MB pour toute la requête
+    fileSizeThreshold = 1024 * 1024      // 1 MB en mémoire, le reste sur disque
+)
 public class FrontServlet extends HttpServlet {
     private final Map<String, Class<?>> controllerMap = new HashMap<>();
     private final Map<String, Method> methodMap = new HashMap<>();
@@ -44,8 +48,6 @@ public class FrontServlet extends HttpServlet {
 
         ctx.setAttribute("routeControllers", controllerMap);
         ctx.setAttribute("routeMethods", methodMap);
-    
-
     }
 
     private void scanResources(String path, ServletContext ctx) {
@@ -233,6 +235,8 @@ public class FrontServlet extends HttpServlet {
         Map<String, Object> params = new HashMap<>();
         Map<String, byte[]> files = new HashMap<>();
         Map<String, List<byte[]>> filesMulti = new HashMap<>();
+        Map<String, String> fileNames = new HashMap<>(); // NOUVEAU : Noms des fichiers
+        Map<String, List<String>> fileNamesMulti = new HashMap<>(); // NOUVEAU : Noms multiples
 
         for (Part part : req.getParts()) {
             String fieldName = part.getName();
@@ -251,13 +255,18 @@ public class FrontServlet extends HttpServlet {
 
                 // Stockage simple (écrasement)
                 files.put(fieldName, fileContent);
+                fileNames.put(fieldName, fileName); // Stocker le nom original
 
                 // Stockage multiple
                 filesMulti.putIfAbsent(fieldName, new ArrayList<>());
+                fileNamesMulti.putIfAbsent(fieldName, new ArrayList<>());
+                
                 List<byte[]> fileList = filesMulti.get(fieldName);
+                List<String> nameList = fileNamesMulti.get(fieldName);
                 
                 if (fileList.size() < MAX_FILES_PER_INPUT) {
                     fileList.add(fileContent);
+                    nameList.add(fileName); // Stocker le nom
                 } else {
                     log("Limite de " + MAX_FILES_PER_INPUT + " fichiers atteinte pour " + fieldName);
                 }
@@ -269,7 +278,7 @@ public class FrontServlet extends HttpServlet {
             }
         }
 
-        return new MultipartData(params, files, filesMulti);
+        return new MultipartData(params, files, filesMulti, fileNames, fileNamesMulti);
     }
 
     /**
@@ -279,11 +288,18 @@ public class FrontServlet extends HttpServlet {
         final Map<String, Object> params;
         final Map<String, byte[]> files;
         final Map<String, List<byte[]>> filesMulti;
+        final Map<String, String> fileNames;
+        final Map<String, List<String>> fileNamesMulti;
 
-        MultipartData(Map<String, Object> params, Map<String, byte[]> files, Map<String, List<byte[]>> filesMulti) {
+        MultipartData(Map<String, Object> params, Map<String, byte[]> files, 
+                     Map<String, List<byte[]>> filesMulti,
+                     Map<String, String> fileNames,
+                     Map<String, List<String>> fileNamesMulti) {
             this.params = params;
             this.files = files;
             this.filesMulti = filesMulti;
+            this.fileNames = fileNames;
+            this.fileNamesMulti = fileNamesMulti;
         }
     }
 
@@ -306,6 +322,13 @@ public class FrontServlet extends HttpServlet {
             isMultipart = true;
             try {
                 multipartData = parseMultipartRequest(req);
+                // Stocker les noms de fichiers dans les attributs de requête pour que le controller puisse y accéder
+                if (multipartData.fileNames != null && !multipartData.fileNames.isEmpty()) {
+                    req.setAttribute("__uploadedFileNames", multipartData.fileNames);
+                }
+                if (multipartData.fileNamesMulti != null && !multipartData.fileNamesMulti.isEmpty()) {
+                    req.setAttribute("__uploadedFileNamesMulti", multipartData.fileNamesMulti);
+                }
             } catch (Exception e) {
                 log("Erreur parsing multipart: " + e.getMessage());
                 resp.getWriter().println("<pre>Erreur upload: " + e.getMessage() + "</pre>");
@@ -319,6 +342,17 @@ public class FrontServlet extends HttpServlet {
         Object[] args = new Object[paramTypes.length];
 
     for (int i = 0; i < params.length; i++) {
+
+        // Support injection automatique de HttpServletRequest et HttpServletResponse
+if (paramTypes[i] == HttpServletRequest.class) {
+    args[i] = req;
+    continue;
+}
+
+if (paramTypes[i] == HttpServletResponse.class) {
+    args[i] = resp;
+    continue;
+}
 
         // ========================================================================
         // SPRINT 10 : INJECTION MAP SELON TYPE GÉNÉRIQUE
