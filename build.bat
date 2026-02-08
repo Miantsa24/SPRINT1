@@ -10,7 +10,10 @@ REM Dossiers
 set SRC_DIR=src
 set BUILD_DIR=classes
 set LIB_DIR=lib
-set DEST_DIR=C:\Program Files\Apache Software Foundation\apache-tomcat-10.1.49\webapps\url_test\WEB-INF\lib
+set DEST_DIR=C:\Users\Za\Documents\S5\GitHub\MrNaina\Hotel\src\main\webapp\WEB-INF\lib
+
+REM Utiliser Java 17 pour la compilation
+set JAVA_HOME=C:\Program Files\Java\jdk-17
 
 echo === Compilation du projet et création de %JAR_NAME% ===
 
@@ -33,7 +36,7 @@ setlocal enabledelayedexpansion
 
 echo Compilation des fichiers Java...
 dir /s /b "%SRC_DIR%\*.java" > sources.txt
-javac -parameters -cp "!CP!" -d "%BUILD_DIR%" @sources.txt
+"%JAVA_HOME%\bin\javac" -parameters -cp "!CP!" -d "%BUILD_DIR%" @sources.txt
 del sources.txt
 
 if %ERRORLEVEL% NEQ 0 (
@@ -42,7 +45,7 @@ if %ERRORLEVEL% NEQ 0 (
 )
 
 echo Création du JAR...
-jar cf "%JAR_NAME%" -C "%BUILD_DIR%" .
+"%JAVA_HOME%\bin\jar" cf "%JAR_NAME%" -C "%BUILD_DIR%" .
 
 echo ✅ Compilation terminée avec succès : %JAR_NAME%
 

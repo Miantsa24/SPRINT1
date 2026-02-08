@@ -44,7 +44,7 @@ public class FrontServlet extends HttpServlet {
         super.init();
 
         ServletContext ctx = getServletContext();
-        String base = "/WEB-INF/classes/src/";
+        String base = "/WEB-INF/classes/controllers/";
 
         Set<String> resources = ctx.getResourcePaths(base);
         if (resources != null) {
@@ -53,6 +53,9 @@ public class FrontServlet extends HttpServlet {
 
         ctx.setAttribute("routeControllers", controllerMap);
         ctx.setAttribute("routeMethods", methodMap);
+
+        System.out.println("FrontServlet initialized. Controllers: " + controllerMap.keySet());
+        System.out.println("Methods: " + methodMap.keySet());
     }
 
     private void scanResources(String path, ServletContext ctx) {
